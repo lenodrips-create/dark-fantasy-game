@@ -52,6 +52,7 @@ static const char *FS =
     "uniform vec3 lightColor;\n"
     "uniform vec3 ambient;\n"
     "uniform float unlit;\n"
+    "uniform float brightness;\n"
     "void main() {\n"
     "    vec4 c = texture2D(texture0, fragTexCoord) * colDiffuse * fragColor;\n"
     "    if (c.a < 0.02) discard;\n"
@@ -59,7 +60,7 @@ static const char *FS =
     "    if (!gl_FrontFacing) n = -n;\n"              // walls are seen from both sides
     "    float d = max(dot(n, lightDir), 0.0);\n"
     "    vec3 lit = mix(ambient + lightColor * d, vec3(1.0), unlit);\n"
-    "    gl_FragColor = vec4(c.rgb * lit, c.a);\n"
+    "    gl_FragColor = vec4(c.rgb * lit * brightness, c.a);\n"
     "}\n";
 
 // ---------------------------------------------------------------------------
@@ -267,6 +268,8 @@ static void InitGame(void)
     SetShaderValue(lit, GetShaderLocation(lit, "lightColor"), &lightColor, SHADER_UNIFORM_VEC3);
     SetShaderValue(lit, GetShaderLocation(lit, "ambient"), &ambient, SHADER_UNIFORM_VEC3);
     locUnlit = GetShaderLocation(lit, "unlit");
+    float brightness = 0.7f;                                   // whole scene 30% darker
+    SetShaderValue(lit, GetShaderLocation(lit, "brightness"), &brightness, SHADER_UNIFORM_FLOAT);
     SetShaderValue(lit, locUnlit, &zero, SHADER_UNIFORM_FLOAT);
 
     level = LoadModel("assets/level.glb");
@@ -413,19 +416,32 @@ static void UpdateGame(float dt)
     walkBlend += (target01 - walkBlend)*fminf(1.0f, dt*10.0f);   // ease into / out of the stride
 }
 
-// Walk cycle: legs swing opposite each other from the hips, arms counter-swing from the shoulders,
-// the body bobs twice per stride and leans a little forward.
+// Walk cycle: legs swing from the hips; the torso (body + arms) rides on top of the hips,
+// twisting against the stride, rocking side to side over the planted foot, leaning forward
+// and bobbing twice per step. Arms counter-swing from the shoulders.
 static void DrawKnight(void)
 {
     float swing = sinf(walkT)*walkBlend;
-    float bob   = fabsf(sinf(walkT))*0.16f*walkBlend;
-    float angle[PART_COUNT] = { 0, 0.55f*swing, -0.55f*swing, -0.40f*swing, 0.40f*swing };
-    Matrix world = MatrixMultiply(MatrixMultiply(MatrixRotateX(0.06f*walkBlend), MatrixRotateY(knightFacing)),
-                                  MatrixTranslate(playerPos.x, playerPos.y + bob, playerPos.z));
+    float bob   = fabsf(sinf(walkT))*0.20f*walkBlend;
+    float legA  = 0.75f*swing, armA = 0.50f*swing;
+
+    Matrix root = MatrixMultiply(MatrixRotateY(knightFacing),
+                                 MatrixTranslate(playerPos.x, playerPos.y + bob, playerPos.z));
+
+    // torso pivots at hip height so it twists/sways around the waist, not the feet
+    float hipY = knightPivot[PART_LEG_L].y;
+    Matrix torso = MatrixMultiply(MatrixTranslate(0, -hipY, 0),
+                   MatrixMultiply(MatrixRotateZ(0.07f*swing),                  // rock over the planted foot
+                   MatrixMultiply(MatrixRotateY(-0.22f*swing),                 // twist against the legs
+                   MatrixMultiply(MatrixRotateX(0.10f*walkBlend + 0.04f*fabsf(swing)),   // lean into the step
+                                  MatrixTranslate(0, hipY, 0)))));
+
+    float angle[PART_COUNT] = { 0, legA, -legA, -armA, armA };
     for (int p = 0; p < PART_COUNT; p++) {
         Matrix local = MatrixMultiply(MatrixRotateX(angle[p]),
                                       MatrixTranslate(knightPivot[p].x, knightPivot[p].y, knightPivot[p].z));
-        knightPart[p].transform = MatrixMultiply(local, world);
+        bool isLeg = (p == PART_LEG_L || p == PART_LEG_R);
+        knightPart[p].transform = MatrixMultiply(isLeg ? local : MatrixMultiply(local, torso), root);
         DrawModel(knightPart[p], Vector3Zero(), 1.0f, WHITE);
     }
 }
@@ -440,7 +456,7 @@ static void DrawGame(void)
     float s = fmaxf(sw/sky.width, sh/sky.height);
     DrawTexturePro(sky, (Rectangle){ 0, 0, (float)sky.width, (float)sky.height },
                    (Rectangle){ (sw - sky.width*s)/2, (sh - sky.height*s)/2, sky.width*s, sky.height*s },
-                   (Vector2){ 0 }, 0, WHITE);
+                   (Vector2){ 0 }, 0, (Color){ 178, 178, 178, 255 });   // sky 30% darker too
 
     BeginMode3D(camera);
         rlDisableBackfaceCulling();
