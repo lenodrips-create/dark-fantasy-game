@@ -83,10 +83,10 @@ const MOON_DIR = new THREE.Vector3(-0.55, 1, 0.45).normalize();
 const lam = (o) => new THREE.MeshLambertMaterial(o);
 const MATS = {
   GrassShaded: lam({ map: tex("grass_seamless.png", { repeat:1/14, nearest:false }), color:0x606060, vertexColors:true }),
-  Grass:       lam({ map: tex("grass_seamless.png", { repeat:1/14, nearest:false }), color:0x606060 }),
-  WallTex:     lam({ map: tex("wall.png") }),
-  TownStone:   lam({ map: tex("town_stone.png") }),
-  CaveBlack:   new THREE.MeshBasicMaterial({ color:0x000000 }),
+  Grass:       lam({ map: tex("grass_seamless.png", { repeat:1/14, nearest:false }), color:0x606060, side:THREE.DoubleSide }),
+  WallTex:     lam({ map: tex("wall.png"), side:THREE.DoubleSide }),
+  TownStone:   lam({ map: tex("town_stone.png"), side:THREE.DoubleSide }),
+  CaveBlack:   new THREE.MeshBasicMaterial({ color:0x000000, side:THREE.DoubleSide }),
   PineTrunk:   lam({ map: tex("pine_trunk.png") }),
   PineLeaves:  lam({ map: tex("pine_leaves.png"), color:0x3a4f3e }),
   HouseWall:   lam({ map: tex("walls_black.png") }),
