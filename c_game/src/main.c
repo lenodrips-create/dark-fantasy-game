@@ -15,7 +15,7 @@
 #if defined(PLATFORM_WEB)
     #include <emscripten/emscripten.h>
     #include <emscripten/html5.h>
-    #define GLSL_HEADER "#version 100\nprecision mediump float;\n"
+    #define GLSL_HEADER "#version 100\n#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n"
 #else
     #define GLSL_HEADER "#version 100\n"
 #endif
@@ -31,10 +31,13 @@ static const char *VS =
     "attribute vec4 vertexColor;\n"
     "uniform mat4 mvp;\n"
     "uniform mat4 matNormal;\n"
+    "uniform mat4 matModel;\n"
     "varying vec2 fragTexCoord;\n"
     "varying vec4 fragColor;\n"
     "varying vec3 fragNormal;\n"
+    "varying vec3 fragPosition;\n"
     "void main() {\n"
+    "    fragPosition = vec3(matModel * vec4(vertexPosition, 1.0));\n"
     "    fragTexCoord = vertexTexCoord;\n"
     "    fragColor = vertexColor;\n"
     "    fragNormal = normalize(vec3(matNormal * vec4(vertexNormal, 0.0)));\n"
@@ -46,6 +49,7 @@ static const char *FS =
     "varying vec2 fragTexCoord;\n"
     "varying vec4 fragColor;\n"
     "varying vec3 fragNormal;\n"
+    "varying vec3 fragPosition;\n"
     "uniform sampler2D texture0;\n"
     "uniform vec4 colDiffuse;\n"
     "uniform vec3 lightDir;\n"
@@ -53,14 +57,29 @@ static const char *FS =
     "uniform vec3 ambient;\n"
     "uniform float unlit;\n"
     "uniform float brightness;\n"
+    "uniform float glowOn;\n"
+    "uniform vec3 torchPos[16];\n"
+    "uniform float torchPower;\n"
     "void main() {\n"
-    "    vec4 c = texture2D(texture0, fragTexCoord) * colDiffuse * fragColor;\n"
+    "    vec4 t = texture2D(texture0, fragTexCoord);\n"
+    "    vec4 c = t * colDiffuse * fragColor;\n"
+    // texels with alpha ~0.6 are self-lit (house windows, torch flames)
+    "    float glow = (t.a > 0.3 && t.a < 0.9) ? glowOn : 0.0;\n"
     "    if (c.a < 0.02) discard;\n"
     "    vec3 n = normalize(fragNormal);\n"
     "    if (!gl_FrontFacing) n = -n;\n"              // walls are seen from both sides
     "    float d = max(dot(n, lightDir), 0.0);\n"
-    "    vec3 lit = mix(ambient + lightColor * d, vec3(1.0), unlit);\n"
-    "    gl_FragColor = vec4(c.rgb * lit * brightness, c.a);\n"
+    "    vec3 torch = vec3(0.0);\n"
+    "    for (int i = 0; i < 16; i++) {\n"
+    "        vec3 L = torchPos[i] - fragPosition;\n"
+    "        float dist = length(L);\n"
+    "        float a = clamp(1.0 - dist/15.0, 0.0, 1.0);\n"
+    "        torch += a*a*(0.6 + 1.5*max(dot(n, L/max(dist, 0.001)), 0.0));\n"
+    "    }\n"
+    "    vec3 warm = vec3(1.0, 0.52, 0.20) * torch * torchPower;\n"
+    "    vec3 lit = mix(ambient + lightColor * d + warm, vec3(1.0), unlit);\n"
+    "    vec3 rgb = mix(c.rgb * lit * brightness, t.rgb * colDiffuse.rgb * 1.1, glow);\n"
+    "    gl_FragColor = vec4(rgb, mix(c.a, 1.0, glow));\n"
     "}\n";
 
 // ---------------------------------------------------------------------------
@@ -76,6 +95,11 @@ typedef struct { Vector3 base; float r, h; bool cone; } Blocker;   // volumes th
 static Circle   circles[MAX_CIRCLES]; static int circleCount = 0;
 static FogPatch fog[MAX_FOG];         static int fogCount = 0;
 static Vector3  spawn = { 0 };
+#define MAX_BOXES 256
+#define MAX_TORCHES 128
+typedef struct { float x, y, z, hx, hz, c, s, h; } Box;     // building footprint, rotated about Y
+static Box     boxes[MAX_BOXES];     static int boxCount = 0;
+static Vector3 torches[MAX_TORCHES]; static int torchCount = 0;
 #define MAX_BLOCKERS 512
 static Blocker  blockers[MAX_BLOCKERS]; static int blockerCount = 0;
 
@@ -96,6 +120,13 @@ static void LoadLevelData(const char *path)
             int cone = 0;
             fscanf(f, "%f %f %f %f %f %d", &a, &b, &c, &d, &e, &cone);
             if (blockerCount < MAX_BLOCKERS) blockers[blockerCount++] = (Blocker){ { a, b, c }, d, e, cone != 0 };
+        } else if (kind == 'H') {                       // building: x y z halfX halfZ rotation height
+            float rot, hgt;
+            fscanf(f, "%f %f %f %f %f %f %f", &a, &b, &c, &d, &e, &rot, &hgt);
+            if (boxCount < MAX_BOXES) boxes[boxCount++] = (Box){ a, b, c, d, e, cosf(rot), sinf(rot), hgt };
+        } else if (kind == 'L') {                       // torch flame (light source)
+            fscanf(f, "%f %f %f", &a, &b, &c);
+            if (torchCount < MAX_TORCHES) torches[torchCount++] = (Vector3){ a, b, c };
         } else if (kind == 'S') {                       // player spawn
             fscanf(f, "%f %f %f", &a, &b, &c);
             spawn = (Vector3){ a, b, c };
@@ -192,7 +223,7 @@ static const char *PART_NAMES[PART_COUNT] = { "body", "legL", "legR", "armL", "a
 static Model   knightPart[PART_COUNT];
 static Vector3 knightPivot[PART_COUNT];
 static Shader   lit;
-static int      locUnlit;
+static int      locUnlit, locGlowOn, locTorchPos, locTorchPower;
 static Texture2D sky, fogTex;
 static Mesh     fogMesh;
 static Material fogMat;
@@ -246,12 +277,17 @@ static void SetupLevelMaterials(bool *walkable)
         if      (!strcmp(n, "GrassShaded")) { t = Tex("grass.png", false); tint = (Color){ 120, 120, 120, 255 }; walkable[mi] = true; }
         else if (!strcmp(n, "Grass"))       { t = Tex("grass.png", false); tint = (Color){ 110, 110, 110, 255 }; }
         else if (!strcmp(n, "WallTex"))     { t = Tex("wall.png", true); }
-        else if (!strcmp(n, "TownStone"))   { t = Tex("town_stone.png", true); walkable[mi] = true; }
+        else if (!strcmp(n, "TownStone"))   { t = Tex("flagstone.png", true); walkable[mi] = true; }
         else if (!strcmp(n, "CaveBlack"))   { tint = BLACK; }
         else if (!strcmp(n, "PineTrunk"))   { t = Tex("pine_trunk.png", true); }
         else if (!strcmp(n, "PineLeaves"))  { t = Tex("pine_leaves.png", true); tint = (Color){ 70, 105, 78, 255 }; }
-        else if (!strcmp(n, "HouseWall"))   { t = Tex("walls_black.png", true); }
-        else if (!strcmp(n, "HouseRoof"))   { t = Tex("roof_gray.png", true); }
+        else if (!strcmp(n, "HouseWall"))   { t = Tex("timber.png", true); }
+        else if (!strcmp(n, "HouseRoof"))   { t = Tex("slate.png", true); }
+        else if (!strcmp(n, "TowerBrick"))  { t = Tex("brick.png", true); }
+        else if (!strcmp(n, "TowerTrim"))   { t = Tex("brick_dark.png", true); }
+        else if (!strcmp(n, "Iron"))        { t = Tex("iron.png", true); }
+        else if (!strcmp(n, "TorchWood"))   { t = Tex("torchwood.png", true); }
+        else if (!strcmp(n, "Flame"))       { t = Tex("flame.png", true); }
         if (t.id) m->maps[MATERIAL_MAP_DIFFUSE].texture = t;
         m->maps[MATERIAL_MAP_DIFFUSE].color = tint;
     }
@@ -268,6 +304,11 @@ static void InitGame(void)
     SetShaderValue(lit, GetShaderLocation(lit, "lightColor"), &lightColor, SHADER_UNIFORM_VEC3);
     SetShaderValue(lit, GetShaderLocation(lit, "ambient"), &ambient, SHADER_UNIFORM_VEC3);
     locUnlit = GetShaderLocation(lit, "unlit");
+    locGlowOn = GetShaderLocation(lit, "glowOn");
+    locTorchPos = GetShaderLocation(lit, "torchPos");
+    locTorchPower = GetShaderLocation(lit, "torchPower");
+    float one = 1.0f;
+    SetShaderValue(lit, locGlowOn, &one, SHADER_UNIFORM_FLOAT);
     float brightness = 0.7f;                                   // whole scene 30% darker
     SetShaderValue(lit, GetShaderLocation(lit, "brightness"), &brightness, SHADER_UNIFORM_FLOAT);
     SetShaderValue(lit, locUnlit, &zero, SHADER_UNIFORM_FLOAT);
@@ -304,6 +345,12 @@ static void InitGame(void)
     playerPos = spawn;
     facing = atan2f(-spawn.x, -spawn.z);          // look into the map from the spawn corner
     yaw = facing + PI;
+#ifdef TEST_TOWN   // dev builds only: start at the town entrance looking down the main street
+    playerPos = (Vector3){ 70.0f, 0, -11.2f };
+    GroundHeight(playerPos.x, playerPos.z, &playerPos.y);
+    facing = atan2f(0.8735f, 0.4868f); yaw = facing + PI;
+    pitch = -0.5f;
+#endif
 
     camera.up = (Vector3){ 0, 1, 0 };
     camera.fovy = 60.0f;
@@ -314,8 +361,36 @@ static void InitGame(void)
 
 static float WrapAngle(float a) { return atan2f(sinf(a), cosf(a)); }
 
+// point -> box-local XZ (inverse of the box's rotation about Y)
+static void BoxLocal(const Box *b, float x, float z, float *lx, float *lz)
+{
+    float dx = x - b->x, dz = z - b->z;
+    *lx = dx*b->c - dz*b->s;
+    *lz = dx*b->s + dz*b->c;
+}
+
+// Push a circle of radius r out of a building footprint.
+static void PushOutOfBox(const Box *b, float *px, float *pz, float r)
+{
+    float lx, lz; BoxLocal(b, *px, *pz, &lx, &lz);
+    float qx = Clamp(lx, -b->hx, b->hx), qz = Clamp(lz, -b->hz, b->hz);
+    float ex = lx - qx, ez = lz - qz, dist = sqrtf(ex*ex + ez*ez);
+    if (dist >= r) return;
+    if (dist > 1e-4f) { lx = qx + ex/dist*r; lz = qz + ez/dist*r; }
+    else if (b->hx - fabsf(lx) < b->hz - fabsf(lz)) lx = copysignf(b->hx + r, lx);
+    else lz = copysignf(b->hz + r, lz);
+    *px = b->x + lx*b->c + lz*b->s;
+    *pz = b->z - lx*b->s + lz*b->c;
+}
+
 static bool InsideBlocker(Vector3 p)
 {
+    for (int i = 0; i < boxCount; i++) {
+        const Box *b = &boxes[i];
+        if (p.y < b->y - 0.5f || p.y > b->y + b->h + 0.5f) continue;
+        float lx, lz; BoxLocal(b, p.x, p.z, &lx, &lz);
+        if (fabsf(lx) < b->hx + 0.6f && fabsf(lz) < b->hz + 0.6f) return true;
+    }
     for (int i = 0; i < blockerCount; i++) {
         const Blocker *b = &blockers[i];
         float up = p.y - b->base.y;
@@ -355,7 +430,7 @@ static void UpdateGame(float dt)
         Vector2 md = GetMouseDelta();
         if (locked || IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             yaw -= md.x*0.0025f;
-            pitch = Clamp(pitch + md.y*0.0025f, -0.35f, 1.2f);
+            pitch = Clamp(pitch + md.y*0.0025f, -0.9f, 1.2f);
         }
     }
     camDist = Clamp(camDist - GetMouseWheelMove()*1.5f, 6.0f, 40.0f);
@@ -376,6 +451,7 @@ static void UpdateGame(float dt)
                 float d = sqrtf(dx*dx + dz*dz), min = circles[i].r + PLAYER_R;
                 if (d < min && d > 1e-4f) { px = circles[i].x + dx/d*min; pz = circles[i].z + dz/d*min; }
             }
+            for (int i = 0; i < boxCount; i++) PushOutOfBox(&boxes[i], &px, &pz, PLAYER_R);   // houses / towers
             float h;
             if (GroundHeight(px, pz, &h)) { playerPos.x = px; playerPos.z = pz; }   // cliff walls: no ground beyond
             facing = atan2f(dir.x, dir.z);
@@ -396,7 +472,8 @@ static void UpdateGame(float dt)
 
     // --- third-person camera on a spring arm ---
     Vector3 target = Vector3Add(playerPos, (Vector3){ 0, 3.2f, 0 });
-    Vector3 off = { sinf(yaw)*cosf(pitch)*camDist, sinf(pitch)*camDist, cosf(yaw)*cosf(pitch)*camDist };
+    float armPitch = fmaxf(pitch, -0.30f);     // below this the arm stays low and the view tilts up instead
+    Vector3 off = { sinf(yaw)*cosf(armPitch)*camDist, sinf(armPitch)*camDist, cosf(yaw)*cosf(armPitch)*camDist };
     Vector3 want = Vector3Add(target, off);
     float cg;
     if (GroundHeight(want.x, want.z, &cg) && want.y < cg + 1.5f) want.y = cg + 1.5f;
@@ -407,6 +484,7 @@ static void UpdateGame(float dt)
     shownT = (clearT < shownT) ? clearT : shownT + (clearT - shownT)*fminf(1.0f, dt*4.0f);   // snap in, ease out
     camera.position = Vector3Lerp(target, want, shownT);
     camera.target = target;
+    if (pitch < -0.30f) camera.target.y += (-0.30f - pitch)*40.0f;   // look up at the towers
 
     // turn the knight smoothly toward the walking direction
     static float shownFacing = 0;
@@ -446,8 +524,26 @@ static void DrawKnight(void)
     }
 }
 
+static void UpdateTorchLights(void)
+{
+    Vector3 near[16];
+    float   nd[16];
+    for (int k = 0; k < 16; k++) { near[k] = (Vector3){ 0, -10000, 0 }; nd[k] = 1e30f; }
+    for (int i = 0; i < torchCount; i++) {
+        float dd = Vector3DistanceSqr(torches[i], playerPos);
+        int worst = 0;
+        for (int k = 1; k < 16; k++) if (nd[k] > nd[worst]) worst = k;
+        if (dd < nd[worst]) { nd[worst] = dd; near[worst] = torches[i]; }
+    }
+    SetShaderValueV(lit, locTorchPos, near, SHADER_UNIFORM_VEC3, 16);
+    float t = (float)GetTime();
+    float power = 1.0f + 0.08f*sinf(t*13.0f) + 0.05f*sinf(t*7.3f + 1.7f);
+    SetShaderValue(lit, locTorchPower, &power, SHADER_UNIFORM_FLOAT);
+}
+
 static void DrawGame(void)
 {
+    UpdateTorchLights();
     BeginDrawing();
     ClearBackground((Color){ 11, 8, 24, 255 });
 
@@ -467,6 +563,7 @@ static void DrawGame(void)
         // smoky fog: unlit, alpha-blended, no depth writes
         float one = 1.0f, zero = 0.0f;
         SetShaderValue(lit, locUnlit, &one, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(lit, locGlowOn, &zero, SHADER_UNIFORM_FLOAT);
         BeginBlendMode(BLEND_ALPHA);
         rlDisableDepthMask();
         for (int i = 0; i < fogCount; i++) {
@@ -477,6 +574,7 @@ static void DrawGame(void)
         rlEnableDepthMask();
         EndBlendMode();
         SetShaderValue(lit, locUnlit, &zero, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(lit, locGlowOn, &one, SHADER_UNIFORM_FLOAT);
         rlEnableBackfaceCulling();
     EndMode3D();
 

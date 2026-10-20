@@ -7,3 +7,8 @@ PineTrunk
 PineLeaves
 HouseWall
 HouseRoof
+TowerBrick
+TowerTrim
+Iron
+TorchWood
+Flame
