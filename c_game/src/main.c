@@ -70,10 +70,13 @@ static const char *FS =
 
 typedef struct { float x, z, r; } Circle;
 typedef struct { Vector3 pos; float sx, sz, rot; } FogPatch;
+typedef struct { Vector3 base; float r, h; bool cone; } Blocker;   // volumes the camera may not enter
 
 static Circle   circles[MAX_CIRCLES]; static int circleCount = 0;
 static FogPatch fog[MAX_FOG];         static int fogCount = 0;
 static Vector3  spawn = { 0 };
+#define MAX_BLOCKERS 512
+static Blocker  blockers[MAX_BLOCKERS]; static int blockerCount = 0;
 
 static void LoadLevelData(const char *path)
 {
@@ -88,6 +91,10 @@ static void LoadLevelData(const char *path)
         } else if (kind == 'F') {                       // fog patch
             fscanf(f, "%f %f %f %f %f %f", &a, &b, &c, &d, &e, &g);
             if (fogCount < MAX_FOG) fog[fogCount++] = (FogPatch){ { a, b, c }, d, e, g };
+        } else if (kind == 'B') {                       // camera blocker: x y z radius height cone
+            int cone = 0;
+            fscanf(f, "%f %f %f %f %f %d", &a, &b, &c, &d, &e, &cone);
+            if (blockerCount < MAX_BLOCKERS) blockers[blockerCount++] = (Blocker){ { a, b, c }, d, e, cone != 0 };
         } else if (kind == 'S') {                       // player spawn
             fscanf(f, "%f %f %f", &a, &b, &c);
             spawn = (Vector3){ a, b, c };
@@ -176,7 +183,13 @@ static bool GroundHeight(float x, float z, float *out)
 // ---------------------------------------------------------------------------
 // Game state
 // ---------------------------------------------------------------------------
-static Model    level, knight;
+static Model    level;
+
+// The knight is split into body + limbs; limbs swing around their hip/shoulder pivots.
+enum { PART_BODY, PART_LEG_L, PART_LEG_R, PART_ARM_L, PART_ARM_R, PART_COUNT };
+static const char *PART_NAMES[PART_COUNT] = { "body", "legL", "legR", "armL", "armR" };
+static Model   knightPart[PART_COUNT];
+static Vector3 knightPivot[PART_COUNT];
 static Shader   lit;
 static int      locUnlit;
 static Texture2D sky, fogTex;
@@ -189,6 +202,7 @@ static float   playerVy = 0, facing = 0, walkT = 0;
 static bool    onGround = true;
 static float   yaw, pitch = 0.32f, camDist = 14.0f;
 static bool    paused = true;
+static float   knightFacing = 0, walkBlend = 0;
 
 static const float PLAYER_R = 0.9f;
 static bool  clickedToPlay = false;   // set by the browser's click event (never missed, even for very short clicks)
@@ -260,10 +274,17 @@ static void InitGame(void)
     SetupLevelMaterials(walkable);
     BuildHeightField(&level, walkable);
 
-    knight = LoadModel("assets/knight.glb");
-    for (int i = 0; i < knight.materialCount; i++) {
-        knight.materials[i].shader = lit;
-        knight.materials[i].maps[MATERIAL_MAP_DIFFUSE].color = (Color){ 235, 225, 200, 255 };   // offsets the lavender moonlight
+    FILE *pf = fopen("assets/knight_parts.txt", "r");
+    char pname[16]; float px, py, pz;
+    while (pf && fscanf(pf, "%15s %f %f %f", pname, &px, &py, &pz) == 4)
+        for (int p = 0; p < PART_COUNT; p++) if (!strcmp(pname, PART_NAMES[p])) knightPivot[p] = (Vector3){ px, py, pz };
+    if (pf) fclose(pf);
+    for (int p = 0; p < PART_COUNT; p++) {
+        knightPart[p] = LoadModel(TextFormat("assets/knight_%s.glb", PART_NAMES[p]));
+        for (int i = 0; i < knightPart[p].materialCount; i++) {
+            knightPart[p].materials[i].shader = lit;
+            knightPart[p].materials[i].maps[MATERIAL_MAP_DIFFUSE].color = (Color){ 235, 225, 200, 255 };   // offsets the lavender moonlight
+        }
     }
 
     sky = LoadTexture("assets/tex/night_sky.png");
@@ -289,6 +310,34 @@ static void InitGame(void)
 }
 
 static float WrapAngle(float a) { return atan2f(sinf(a), cosf(a)); }
+
+static bool InsideBlocker(Vector3 p)
+{
+    for (int i = 0; i < blockerCount; i++) {
+        const Blocker *b = &blockers[i];
+        float up = p.y - b->base.y;
+        if (up < -0.5f || up > b->h + 0.5f) continue;
+        float r = b->cone ? b->r*(1.0f - up/b->h) + 1.2f : b->r + 0.6f;   // pine canopy narrows toward the tip
+        float dx = p.x - b->base.x, dz = p.z - b->base.z;
+        if (dx*dx + dz*dz < r*r) return true;
+    }
+    return false;
+}
+
+// How far the camera can sit along target->want before entering a tree, house or rock (0..1).
+static float CameraClearance(Vector3 target, Vector3 want)
+{
+    const int STEPS = 32;
+    float last = 0.0f;
+    for (int s = 1; s <= STEPS; s++) {
+        float t = (float)s/STEPS;
+        Vector3 p = Vector3Lerp(target, want, t);
+        float g;
+        if (InsideBlocker(p) || (GroundHeight(p.x, p.z, &g) && p.y < g + 0.8f)) return last;
+        last = t;
+    }
+    return 1.0f;
+}
 
 static void UpdateGame(float dt)
 {
@@ -348,14 +397,37 @@ static void UpdateGame(float dt)
     Vector3 want = Vector3Add(target, off);
     float cg;
     if (GroundHeight(want.x, want.z, &cg) && want.y < cg + 1.5f) want.y = cg + 1.5f;
-    camera.position = Vector3Lerp(camera.position, want, fminf(1.0f, dt*10.0f));
+
+    // keep the camera out of trees, houses and rocks: pull it in front of whatever is in the way
+    static float shownT = 1.0f;
+    float clearT = fmaxf(CameraClearance(target, want), 2.5f/camDist);
+    shownT = (clearT < shownT) ? clearT : shownT + (clearT - shownT)*fminf(1.0f, dt*4.0f);   // snap in, ease out
+    camera.position = Vector3Lerp(target, want, shownT);
     camera.target = target;
 
     // turn the knight smoothly toward the walking direction
     static float shownFacing = 0;
     shownFacing += WrapAngle(facing - shownFacing)*fminf(1.0f, dt*12.0f);
-    knight.transform = MatrixMultiply(MatrixRotateZ(moving && onGround ? sinf(walkT)*0.05f : 0.0f),
-                                      MatrixRotateY(shownFacing));
+    knightFacing = shownFacing;
+    float target01 = (moving && onGround) ? 1.0f : 0.0f;
+    walkBlend += (target01 - walkBlend)*fminf(1.0f, dt*10.0f);   // ease into / out of the stride
+}
+
+// Walk cycle: legs swing opposite each other from the hips, arms counter-swing from the shoulders,
+// the body bobs twice per stride and leans a little forward.
+static void DrawKnight(void)
+{
+    float swing = sinf(walkT)*walkBlend;
+    float bob   = fabsf(sinf(walkT))*0.16f*walkBlend;
+    float angle[PART_COUNT] = { 0, 0.55f*swing, -0.55f*swing, -0.40f*swing, 0.40f*swing };
+    Matrix world = MatrixMultiply(MatrixMultiply(MatrixRotateX(0.06f*walkBlend), MatrixRotateY(knightFacing)),
+                                  MatrixTranslate(playerPos.x, playerPos.y + bob, playerPos.z));
+    for (int p = 0; p < PART_COUNT; p++) {
+        Matrix local = MatrixMultiply(MatrixRotateX(angle[p]),
+                                      MatrixTranslate(knightPivot[p].x, knightPivot[p].y, knightPivot[p].z));
+        knightPart[p].transform = MatrixMultiply(local, world);
+        DrawModel(knightPart[p], Vector3Zero(), 1.0f, WHITE);
+    }
 }
 
 static void DrawGame(void)
@@ -374,9 +446,7 @@ static void DrawGame(void)
         rlDisableBackfaceCulling();
         DrawModel(level, Vector3Zero(), 1.0f, WHITE);
 
-        float bob = (onGround && (IsKeyDown(KEY_W) || IsKeyDown(KEY_A) || IsKeyDown(KEY_S) || IsKeyDown(KEY_D)) && !paused)
-                    ? fabsf(sinf(walkT))*0.18f : 0.0f;
-        DrawModel(knight, Vector3Add(playerPos, (Vector3){ 0, bob, 0 }), 1.0f, WHITE);
+        DrawKnight();
 
         // smoky fog: unlit, alpha-blended, no depth writes
         float one = 1.0f, zero = 0.0f;
