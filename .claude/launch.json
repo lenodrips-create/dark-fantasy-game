@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "game", "runtimeExecutable": "/bin/sh", "runtimeArgs": ["-c", "cd \"/Users/lennon_larps/Desktop/forrest-starting level/game\" && exec python3 -m http.server 8765"], "port": 8765 }
+  ]
+}
