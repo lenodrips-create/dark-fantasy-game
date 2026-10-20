@@ -1,0 +1,9 @@
+GrassShaded
+WallTex
+Grass
+TownStone
+CaveBlack
+PineTrunk
+PineLeaves
+HouseWall
+HouseRoof
