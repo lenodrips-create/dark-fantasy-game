@@ -107,6 +107,7 @@ typedef struct { Vector3 pos; float rot; } Actor;
 static Actor robed[MAX_ACTORS]; static int robedCount = 0;
 static Actor demons[8];         static int demonCount = 0;
 static Actor fires[MAX_ACTORS]; static int fireCount = 0;     // rot holds the fire's size
+static Actor smokes[16];        static int smokeCount = 0;
 #define MAX_BLOCKERS 512
 static Blocker  blockers[MAX_BLOCKERS]; static int blockerCount = 0;
 
@@ -134,6 +135,9 @@ static void LoadLevelData(const char *path)
         } else if (kind == 'L') {                       // torch flame (light source)
             fscanf(f, "%f %f %f", &a, &b, &c);
             if (torchCount < MAX_TORCHES) torches[torchCount++] = (Vector3){ a, b, c };
+        } else if (kind == 'M') {                       // smoke column
+            fscanf(f, "%f %f %f %f", &a, &b, &c, &d);
+            if (smokeCount < 16) smokes[smokeCount++] = (Actor){ { a, b, c }, d };
         } else if (kind == 'P' || kind == 'D' || kind == 'X') {   // robed figure / demon / fire
             fscanf(f, "%f %f %f %f", &a, &b, &c, &d);
             Actor ac = { { a, b, c }, d };
@@ -228,7 +232,7 @@ static bool GroundHeight(float x, float z, float *out)
 // ---------------------------------------------------------------------------
 // Game state
 // ---------------------------------------------------------------------------
-static Model    level, robedModel, demonModel, fireModel;
+static Model    level, robedModel, demonModel, fireModel, smokeModel;
 
 // The knight is split into body + limbs; limbs swing around their hip/shoulder pivots.
 enum { PART_BODY, PART_LEG_L, PART_LEG_R, PART_ARM_L, PART_ARM_R, PART_COUNT };
@@ -316,6 +320,7 @@ static void SetupModelMaterials(Model *model, const char *namesPath, bool *walka
         else if (!strcmp(n, "HutFloor"))    { t = Tex("hut_stone.png", false); tint = (Color){ 150, 150, 160, 255 }; walk = true; }
         else if (!strcmp(n, "Wood"))        { t = Tex("chest_wood.png", true); }
         else if (!strcmp(n, "Fire"))        { t = Tex("fire.png", true); }
+        else if (!strncmp(n, "Img_", 4))    { t = Tex(TextFormat("%s.png", n + 4), false); walk = !strcmp(n, "Img_hut_floor"); }
         if (walkable) walkable[mi] = walk;
         if (t.id) m->maps[MATERIAL_MAP_DIFFUSE].texture = t;
         m->maps[MATERIAL_MAP_DIFFUSE].color = tint;
@@ -348,6 +353,7 @@ static void InitGame(void)
     robedModel = LoadModel("assets/robed.glb"); SetupModelMaterials(&robedModel, "assets/robed.mats", NULL);
     demonModel = LoadModel("assets/demon.glb"); SetupModelMaterials(&demonModel, "assets/demon.mats", NULL);
     fireModel  = LoadModel("assets/fire.glb");  SetupModelMaterials(&fireModel,  "assets/fire.mats",  NULL);
+    smokeModel = LoadModel("assets/smoke.glb"); SetupModelMaterials(&smokeModel, "assets/smoke.mats", NULL);
     BuildHeightField(&level, walkable);
 
     FILE *pf = fopen("assets/knight_parts.txt", "r");
@@ -633,6 +639,15 @@ static void DrawGame(void)
                                       MatrixTranslate(fog[i].pos.x, fog[i].pos.y, fog[i].pos.z));
             DrawMesh(fogMesh, fogMat, t);
         }
+        // campfire smoke: two slowly turning, breathing columns
+        float tt = (float)GetTime();
+        for (int i = 0; i < smokeCount; i++)
+            for (int k = 0; k < 2; k++) {
+                float ph = k*2.3f + i;
+                Matrix local = MatrixMultiply(MatrixScale(1.0f + 0.12f*sinf(tt*0.7f + ph), 1.0f + 0.08f*sinf(tt*0.5f + ph), 1.0f),
+                                              MatrixRotateY(tt*(k ? -0.15f : 0.2f) + ph));
+                DrawActor(&smokeModel, local, smokes[i].pos, 0);
+            }
         rlEnableDepthMask();
         EndBlendMode();
         SetShaderValue(lit, locUnlit, &zero, SHADER_UNIFORM_FLOAT);
