@@ -109,6 +109,8 @@ static Actor demons[8];         static int demonCount = 0;
 static Actor fires[MAX_ACTORS]; static int fireCount = 0;     // rot holds the fire's size
 static Actor smokes[16];        static int smokeCount = 0;
 static int   fireType[MAX_ACTORS];                             // 0 campfire flames, 1 demon-pit flames
+#define FIRE_FRAMES 8
+static Texture2D fireFrames[2][FIRE_FRAMES];                   // flipbooks cut from the reference pictures
 
 // ---------- the robed figure's greeting ----------
 static int   talkerIdx = -1;
@@ -365,6 +367,10 @@ static void InitGame(void)
     demonModel = LoadModel("assets/demon.glb"); SetupModelMaterials(&demonModel, "assets/demon.mats", NULL);
     fireModels[0] = LoadModel("assets/fire_camp.glb"); SetupModelMaterials(&fireModels[0], "assets/fire_camp.mats", NULL);
     fireModels[1] = LoadModel("assets/fire_pit.glb");  SetupModelMaterials(&fireModels[1], "assets/fire_pit.mats",  NULL);
+    for (int k = 0; k < FIRE_FRAMES; k++) {
+        fireFrames[0][k] = Tex(TextFormat("fire_camp_%d.png", k), false);
+        fireFrames[1][k] = Tex(TextFormat("fire_pit_%d.png", k), false);
+    }
     smokeModel = LoadModel("assets/smoke.glb"); SetupModelMaterials(&smokeModel, "assets/smoke.mats", NULL);
     BuildHeightField(&level, walkable);
 
@@ -653,11 +659,13 @@ static void DrawActors(void)
         DrawActor(&demonModel, local, demons[i].pos, demons[i].rot);
     }
     for (int i = 0; i < fireCount; i++) {
+        // flipbook: the flame tongues rise and fall; the fire itself stays put
+        int ft = fireType[i] ? 1 : 0;
+        int frame = ((int)(t*12.0f) + i*3) % FIRE_FRAMES;
+        fireModels[ft].materials[1].maps[MATERIAL_MAP_DIFFUSE].texture = fireFrames[ft][frame];
         float sz = fires[i].rot;
-        float flick = 1.0f + 0.12f*sinf(t*9.0f + i*2.1f) + 0.06f*sinf(t*15.7f + i);
-        float sway = (fireType[i] == 1) ? 0.15f*sinf(t*0.9f + i) : t*0.8f + i;   // pit sheet faces out, campfire turns
-        Matrix local = MatrixMultiply(MatrixScale(sz*(1.0f + 0.04f*sinf(t*11.0f + i)), sz*flick, sz), MatrixRotateY(sway));
-        DrawActor(&fireModels[fireType[i] ? 1 : 0], local, fires[i].pos, fireType[i] == 1 && demonCount ? demons[0].rot : 0);
+        Matrix local = MatrixScale(sz, sz*1.35f, sz);           // frames carry extra room above for the tongues
+        DrawActor(&fireModels[ft], local, fires[i].pos, ft == 1 && demonCount ? demons[0].rot : 0);
     }
 }
 
