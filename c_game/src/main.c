@@ -306,11 +306,15 @@ static void SetupModelMaterials(Model *model, const char *namesPath, bool *walka
         else if (!strcmp(n, "Log"))         { t = Tex("log.png", true); }
         else if (!strcmp(n, "PitStone"))    { t = Tex("pitstone.png", true); }
         else if (!strcmp(n, "Lava"))        { t = Tex("lava.png", true); }
-        else if (!strcmp(n, "Robe"))        { t = Tex("robe.png", true); }
-        else if (!strcmp(n, "Skull"))       { t = Tex("skull.png", true); }
-        else if (!strcmp(n, "HoodDark"))    { t = Tex("hood_dark.png", true); }
-        else if (!strcmp(n, "DemonSkin"))   { t = Tex("demon_skin.png", true); }
-        else if (!strcmp(n, "DemonEye"))    { t = Tex("demon_eye.png", true); }
+        else if (!strcmp(n, "RobedFront"))  { t = Tex("robed_front.png", false); }   // pixels from the reference image
+        else if (!strcmp(n, "RobedBack"))   { t = Tex("robed_back.png", false); }
+        else if (!strcmp(n, "DemonFront"))  { t = Tex("demon_front.png", false); }
+        else if (!strcmp(n, "DemonBack"))   { t = Tex("demon_back.png", false); }
+        else if (!strcmp(n, "HutWall"))     { t = Tex("hut_stone.png", false); }
+        else if (!strcmp(n, "HutTeal"))     { t = Tex("hut_teal.png", false); }
+        else if (!strcmp(n, "HutBand"))     { t = Tex("hut_band.png", false); }
+        else if (!strcmp(n, "HutFloor"))    { t = Tex("hut_stone.png", false); tint = (Color){ 150, 150, 160, 255 }; walk = true; }
+        else if (!strcmp(n, "Wood"))        { t = Tex("chest_wood.png", true); }
         else if (!strcmp(n, "Fire"))        { t = Tex("fire.png", true); }
         if (walkable) walkable[mi] = walk;
         if (t.id) m->maps[MATERIAL_MAP_DIFFUSE].texture = t;
@@ -585,8 +589,8 @@ static void DrawActors(void)
         DrawActor(&robedModel, local, robed[i].pos, robed[i].rot);
     }
     for (int i = 0; i < demonCount; i++) {
-        float breathe = sinf(t*0.8f);
-        Matrix local = MatrixMultiply(MatrixRotateX(-0.06f*breathe), MatrixTranslate(0, 0.25f*breathe, 0));
+        float breathe = sinf(t*0.8f);     // small enough that the hands stay on the pit rim
+        Matrix local = MatrixMultiply(MatrixRotateX(-0.02f*breathe), MatrixTranslate(0, 0.06f*breathe, 0));
         DrawActor(&demonModel, local, demons[i].pos, demons[i].rot);
     }
     for (int i = 0; i < fireCount; i++) {
@@ -654,7 +658,13 @@ static void DrawGame(void)
 
 static void Frame(void)
 {
-    if (IsWindowResized()) { /* raylib updates the viewport itself */ }
+#if defined(PLATFORM_WEB)
+    // keep the canvas resolution matched to its on-page size (it can start hidden or change size)
+    double cssW, cssH;
+    emscripten_get_element_css_size("#canvas", &cssW, &cssH);
+    if (cssW > 0 && cssH > 0 && ((int)cssW != GetScreenWidth() || (int)cssH != GetScreenHeight()))
+        SetWindowSize((int)cssW, (int)cssH);
+#endif
     UpdateGame(fminf(GetFrameTime(), 0.05f));
     DrawGame();
 }

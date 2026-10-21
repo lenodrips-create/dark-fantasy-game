@@ -2,6 +2,11 @@ GrassShaded
 WallTex
 Grass
 CaveBlack
+HutWall
+HutTeal
+HutFloor
+HutBand
+Wood
 Log
 PitStone
 Lava
