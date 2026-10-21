@@ -100,6 +100,13 @@ static Vector3  spawn = { 0 };
 typedef struct { float x, y, z, hx, hz, c, s, h; } Box;     // building footprint, rotated about Y
 static Box     boxes[MAX_BOXES];     static int boxCount = 0;
 static Vector3 torches[MAX_TORCHES]; static int torchCount = 0;
+
+// Animated set pieces: robed figures (P), the demon (D) and fires (X)
+#define MAX_ACTORS 64
+typedef struct { Vector3 pos; float rot; } Actor;
+static Actor robed[MAX_ACTORS]; static int robedCount = 0;
+static Actor demons[8];         static int demonCount = 0;
+static Actor fires[MAX_ACTORS]; static int fireCount = 0;     // rot holds the fire's size
 #define MAX_BLOCKERS 512
 static Blocker  blockers[MAX_BLOCKERS]; static int blockerCount = 0;
 
@@ -127,6 +134,12 @@ static void LoadLevelData(const char *path)
         } else if (kind == 'L') {                       // torch flame (light source)
             fscanf(f, "%f %f %f", &a, &b, &c);
             if (torchCount < MAX_TORCHES) torches[torchCount++] = (Vector3){ a, b, c };
+        } else if (kind == 'P' || kind == 'D' || kind == 'X') {   // robed figure / demon / fire
+            fscanf(f, "%f %f %f %f", &a, &b, &c, &d);
+            Actor ac = { { a, b, c }, d };
+            if (kind == 'P' && robedCount < MAX_ACTORS) robed[robedCount++] = ac;
+            if (kind == 'D' && demonCount < 8) demons[demonCount++] = ac;
+            if (kind == 'X' && fireCount < MAX_ACTORS) fires[fireCount++] = ac;
         } else if (kind == 'S') {                       // player spawn
             fscanf(f, "%f %f %f", &a, &b, &c);
             spawn = (Vector3){ a, b, c };
@@ -215,7 +228,7 @@ static bool GroundHeight(float x, float z, float *out)
 // ---------------------------------------------------------------------------
 // Game state
 // ---------------------------------------------------------------------------
-static Model    level;
+static Model    level, robedModel, demonModel, fireModel;
 
 // The knight is split into body + limbs; limbs swing around their hip/shoulder pivots.
 enum { PART_BODY, PART_LEG_L, PART_LEG_R, PART_ARM_L, PART_ARM_R, PART_COUNT };
@@ -258,26 +271,28 @@ static Texture2D Tex(const char *name, bool pixelated)
 }
 
 // Material setup by name (names come from the Blender export, in glTF order).
-static void SetupLevelMaterials(bool *walkable)
+// Textures and tints by material name. Names come from the Blender export, in glTF order.
+static void SetupModelMaterials(Model *model, const char *namesPath, bool *walkable)
 {
     char names[32][32] = { 0 };
     int count = 0;
-    FILE *f = fopen("assets/materials.txt", "r");
+    FILE *f = fopen(namesPath, "r");
     if (f) { while (count < 32 && fscanf(f, "%31s", names[count]) == 1) count++; fclose(f); }
 
-    for (int i = 0; i < level.materialCount; i++) { level.materials[i].shader = lit; walkable[i] = false; }
+    for (int i = 0; i < model->materialCount; i++) { model->materials[i].shader = lit; if (walkable) walkable[i] = false; }
 
     for (int g = 0; g < count; g++) {
         int mi = g + 1;                       // raylib keeps a default material at index 0
-        if (mi >= level.materialCount) break;
-        Material *m = &level.materials[mi];
+        if (mi >= model->materialCount) break;
+        Material *m = &model->materials[mi];
+        bool walk = false;
         Color tint = WHITE;
         Texture2D t = { 0 };
         const char *n = names[g];
-        if      (!strcmp(n, "GrassShaded")) { t = Tex("grass.png", false); tint = (Color){ 120, 120, 120, 255 }; walkable[mi] = true; }
+        if      (!strcmp(n, "GrassShaded")) { t = Tex("grass.png", false); tint = (Color){ 120, 120, 120, 255 }; walk = true; }
         else if (!strcmp(n, "Grass"))       { t = Tex("grass.png", false); tint = (Color){ 110, 110, 110, 255 }; }
         else if (!strcmp(n, "WallTex"))     { t = Tex("wall.png", true); }
-        else if (!strcmp(n, "TownStone"))   { t = Tex("flagstone.png", true); walkable[mi] = true; }
+        else if (!strcmp(n, "TownStone"))   { t = Tex("flagstone.png", true); walk = true; }
         else if (!strcmp(n, "CaveBlack"))   { tint = BLACK; }
         else if (!strcmp(n, "PineTrunk"))   { t = Tex("pine_trunk.png", true); }
         else if (!strcmp(n, "PineLeaves"))  { t = Tex("pine_leaves.png", true); tint = (Color){ 70, 105, 78, 255 }; }
@@ -288,6 +303,16 @@ static void SetupLevelMaterials(bool *walkable)
         else if (!strcmp(n, "Iron"))        { t = Tex("iron.png", true); }
         else if (!strcmp(n, "TorchWood"))   { t = Tex("torchwood.png", true); }
         else if (!strcmp(n, "Flame"))       { t = Tex("flame.png", true); }
+        else if (!strcmp(n, "Log"))         { t = Tex("log.png", true); }
+        else if (!strcmp(n, "PitStone"))    { t = Tex("pitstone.png", true); }
+        else if (!strcmp(n, "Lava"))        { t = Tex("lava.png", true); }
+        else if (!strcmp(n, "Robe"))        { t = Tex("robe.png", true); }
+        else if (!strcmp(n, "Skull"))       { t = Tex("skull.png", true); }
+        else if (!strcmp(n, "HoodDark"))    { t = Tex("hood_dark.png", true); }
+        else if (!strcmp(n, "DemonSkin"))   { t = Tex("demon_skin.png", true); }
+        else if (!strcmp(n, "DemonEye"))    { t = Tex("demon_eye.png", true); }
+        else if (!strcmp(n, "Fire"))        { t = Tex("fire.png", true); }
+        if (walkable) walkable[mi] = walk;
         if (t.id) m->maps[MATERIAL_MAP_DIFFUSE].texture = t;
         m->maps[MATERIAL_MAP_DIFFUSE].color = tint;
     }
@@ -315,7 +340,10 @@ static void InitGame(void)
 
     level = LoadModel("assets/level.glb");
     bool walkable[64] = { 0 };
-    SetupLevelMaterials(walkable);
+    SetupModelMaterials(&level, "assets/materials.txt", walkable);
+    robedModel = LoadModel("assets/robed.glb"); SetupModelMaterials(&robedModel, "assets/robed.mats", NULL);
+    demonModel = LoadModel("assets/demon.glb"); SetupModelMaterials(&demonModel, "assets/demon.mats", NULL);
+    fireModel  = LoadModel("assets/fire.glb");  SetupModelMaterials(&fireModel,  "assets/fire.mats",  NULL);
     BuildHeightField(&level, walkable);
 
     FILE *pf = fopen("assets/knight_parts.txt", "r");
@@ -345,11 +373,10 @@ static void InitGame(void)
     playerPos = spawn;
     facing = atan2f(-spawn.x, -spawn.z);          // look into the map from the spawn corner
     yaw = facing + PI;
-#ifdef TEST_TOWN   // dev builds only: start at the town entrance looking down the main street
-    playerPos = (Vector3){ 70.0f, 0, -11.2f };
+#ifdef TEST_X      // dev builds only: start somewhere else (-DTEST_X=.. -DTEST_Z=.. -DTEST_FACING=..)
+    playerPos = (Vector3){ TEST_X, 0, TEST_Z };
     GroundHeight(playerPos.x, playerPos.z, &playerPos.y);
-    facing = atan2f(0.8735f, 0.4868f); yaw = facing + PI;
-    pitch = -0.5f;
+    facing = TEST_FACING; yaw = facing + PI;
 #endif
 
     camera.up = (Vector3){ 0, 1, 0 };
@@ -541,6 +568,36 @@ static void UpdateTorchLights(void)
     SetShaderValue(lit, locTorchPower, &power, SHADER_UNIFORM_FLOAT);
 }
 
+static void DrawActor(Model *m, Matrix local, Vector3 pos, float rot)
+{
+    m->transform = MatrixMultiply(local, MatrixMultiply(MatrixRotateY(rot), MatrixTranslate(pos.x, pos.y, pos.z)));
+    DrawModel(*m, Vector3Zero(), 1.0f, WHITE);
+}
+
+// Robed figures sway and breathe; the demon heaves up and down in its pit; fires flicker and turn.
+static void DrawActors(void)
+{
+    float t = (float)GetTime();
+    for (int i = 0; i < robedCount; i++) {
+        float ph = i*1.7f;
+        Matrix local = MatrixMultiply(MatrixScale(1.0f, 1.0f + 0.015f*sinf(t*1.6f + ph), 1.0f),
+                                      MatrixRotateZ(0.03f*sinf(t*0.9f + ph)));
+        DrawActor(&robedModel, local, robed[i].pos, robed[i].rot);
+    }
+    for (int i = 0; i < demonCount; i++) {
+        float breathe = sinf(t*0.8f);
+        Matrix local = MatrixMultiply(MatrixRotateX(-0.06f*breathe), MatrixTranslate(0, 0.25f*breathe, 0));
+        DrawActor(&demonModel, local, demons[i].pos, demons[i].rot);
+    }
+    for (int i = 0; i < fireCount; i++) {
+        float sz = fires[i].rot;
+        float flick = 1.0f + 0.18f*sinf(t*9.0f + i*2.1f) + 0.08f*sinf(t*15.7f + i);
+        Matrix local = MatrixMultiply(MatrixScale(sz*(1.0f + 0.05f*sinf(t*11.0f + i)), sz*flick, sz),
+                                      MatrixRotateY(t*0.8f + i));
+        DrawActor(&fireModel, local, fires[i].pos, 0);
+    }
+}
+
 static void DrawGame(void)
 {
     UpdateTorchLights();
@@ -559,6 +616,7 @@ static void DrawGame(void)
         DrawModel(level, Vector3Zero(), 1.0f, WHITE);
 
         DrawKnight();
+        DrawActors();
 
         // smoky fog: unlit, alpha-blended, no depth writes
         float one = 1.0f, zero = 0.0f;

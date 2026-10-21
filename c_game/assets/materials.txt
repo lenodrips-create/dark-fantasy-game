@@ -1,14 +1,9 @@
 GrassShaded
 WallTex
 Grass
-TownStone
 CaveBlack
+Log
+PitStone
+Lava
 PineTrunk
 PineLeaves
-HouseWall
-HouseRoof
-TowerBrick
-TowerTrim
-Iron
-TorchWood
-Flame
