@@ -96,7 +96,7 @@ static Circle   circles[MAX_CIRCLES]; static int circleCount = 0;
 static FogPatch fog[MAX_FOG];         static int fogCount = 0;
 static Vector3  spawn = { 0 };
 #define MAX_BOXES 256
-#define MAX_TORCHES 128
+#define MAX_TORCHES 512
 typedef struct { float x, y, z, hx, hz, c, s, h; } Box;     // building footprint, rotated about Y
 static Box     boxes[MAX_BOXES];     static int boxCount = 0;
 static Vector3 torches[MAX_TORCHES]; static int torchCount = 0;
@@ -107,6 +107,7 @@ typedef struct { Vector3 pos; float rot; } Actor;
 static Actor robed[MAX_ACTORS]; static int robedCount = 0;
 static Actor demons[8];         static int demonCount = 0;
 static Actor goblins[8];        static int goblinCount = 0;
+static Actor reapers[MAX_ACTORS*2]; static int reaperCount = 0;     // hooded figures in the island village
 static Actor fires[MAX_ACTORS]; static int fireCount = 0;     // rot holds the fire's size
 static Actor smokes[16];        static int smokeCount = 0;
 static int   fireType[MAX_ACTORS];                             // 0 campfire flames, 1 demon-pit flames
@@ -156,6 +157,9 @@ static void LoadLevelData(const char *path)
         } else if (kind == 'L') {                       // torch flame (light source)
             fscanf(f, "%f %f %f", &a, &b, &c);
             if (torchCount < MAX_TORCHES) torches[torchCount++] = (Vector3){ a, b, c };
+        } else if (kind == 'R') {                       // hooded figure (village)
+            fscanf(f, "%f %f %f %f", &a, &b, &c, &d);
+            if (reaperCount < MAX_ACTORS*2) reapers[reaperCount++] = (Actor){ { a, b, c }, d };
         } else if (kind == 'G') {                       // goblin at the ruin
             fscanf(f, "%f %f %f %f", &a, &b, &c, &d);
             if (goblinCount < 8) goblins[goblinCount++] = (Actor){ { a, b, c }, d };
@@ -226,6 +230,7 @@ static void BuildHeightField(const Model *m, const bool *walkable)
     hfX0 = bb.min.x - 2; hfZ0 = bb.min.z - 2;
     hfW = (int)((bb.max.x - hfX0)/HF_CELL) + 4;
     hfH = (int)((bb.max.z - hfZ0)/HF_CELL) + 4;
+    if (hf) free(hf);
     hf = malloc(sizeof(float)*hfW*hfH);
     for (int i = 0; i < hfW*hfH; i++) hf[i] = NO_GROUND;
 
@@ -258,6 +263,9 @@ static bool GroundHeight(float x, float z, float *out)
 // ---------------------------------------------------------------------------
 // Game state
 // ---------------------------------------------------------------------------
+static Model    reaperModel;
+static int     currentLevel = 0;                     // 0 forest, 1 island village
+static float   fade = 0; static int fadeState = 0;   // black fade when travelling through the cave
 static Model    level, robedModel, demonModel, goblinModel, fireModels[2], smokeModel;
 
 // The knight is split into body + limbs; limbs swing around their hip/shoulder pivots.
@@ -350,11 +358,32 @@ static void SetupModelMaterials(Model *model, const char *namesPath, bool *walka
         else if (!strcmp(n, "HutFloor"))    { t = Tex("hut_stone.png", false); tint = (Color){ 150, 150, 160, 255 }; walk = true; }
         else if (!strcmp(n, "Wood"))        { t = Tex("chest_wood.png", true); }
         else if (!strcmp(n, "Fire"))        { t = Tex("fire.png", true); }
+        else if (!strncmp(n, "VW_", 3))     { t = Tex(TextFormat("%s.png", n + 3), true); walk = true; }
+        else if (!strncmp(n, "V_", 2))      { t = Tex(TextFormat("%s.png", n + 2), true); }
         else if (!strncmp(n, "Img_", 4))    { t = Tex(TextFormat("%s.png", n + 4), false); walk = !strcmp(n, "Img_hut_floor"); }
         if (walkable) walkable[mi] = walk;
         if (t.id) m->maps[MATERIAL_MAP_DIFFUSE].texture = t;
         m->maps[MATERIAL_MAP_DIFFUSE].color = tint;
     }
+}
+
+static void LoadVillage(void)
+{
+    UnloadModel(level);
+    level = LoadModel("assets/village.glb");
+    bool walkable[64] = { 0 };
+    SetupModelMaterials(&level, "assets/village.mats", walkable);
+    BuildHeightField(&level, walkable);
+    reaperModel = LoadModel("assets/village_reaper.glb"); SetupModelMaterials(&reaperModel, "assets/village_reaper.mats", NULL);
+    circleCount = boxCount = blockerCount = fogCount = torchCount = 0;
+    robedCount = demonCount = goblinCount = fireCount = smokeCount = reaperCount = 0;
+    talkerIdx = -1; talkDone = demonDone = true; talking = false;
+    LoadLevelData("assets/village.txt");
+    UnloadTexture(sky); sky = LoadTexture("assets/tex/v_sky.png"); SetTextureFilter(sky, TEXTURE_FILTER_POINT);
+    playerPos = spawn; playerVy = 0; onGround = true;
+    facing = PI; yaw = facing + PI; pitch = 0.25f;                 // facing up the main street
+    camera.position = Vector3Add(playerPos, (Vector3){ sinf(yaw)*camDist, 6, cosf(yaw)*camDist });
+    currentLevel = 1;
 }
 
 static void InitGame(void)
@@ -419,6 +448,9 @@ static void InitGame(void)
     playerPos = spawn;
     facing = atan2f(-spawn.x, -spawn.z);          // look into the map from the spawn corner
     yaw = facing + PI;
+#ifdef TEST_VILLAGE
+    LoadVillage();
+#endif
 #ifdef TEST_X      // dev builds only: start somewhere else (-DTEST_X=.. -DTEST_Z=.. -DTEST_FACING=..)
     playerPos = (Vector3){ TEST_X, 0, TEST_Z };
     GroundHeight(playerPos.x, playerPos.z, &playerPos.y);
@@ -507,6 +539,12 @@ static void UpdateGame(float dt)
         }
     }
     camDist = Clamp(camDist - GetMouseWheelMove()*1.5f, 6.0f, 40.0f);
+
+    // --- the cave: once the demon has spoken, walking into it takes you to the island village
+    if (currentLevel == 0 && demonDone && demonCount > 0 && fadeState == 0 &&
+        Vector2Distance((Vector2){ playerPos.x, playerPos.z }, (Vector2){ demons[0].pos.x, demons[0].pos.z }) < 7.0f) fadeState = 1;
+    if (fadeState == 1) { fade += dt*1.5f; if (fade >= 1.0f) { fade = 1.0f; LoadVillage(); fadeState = 2; } }
+    else if (fadeState == 2) { fade -= dt*1.0f; if (fade <= 0.0f) { fade = 0.0f; fadeState = 0; } }
 
     // --- movement ---
     bool moving = false, run = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
@@ -662,6 +700,7 @@ static void UpdateTorchLights(void)
     SetShaderValueV(lit, locTorchPos, near, SHADER_UNIFORM_VEC3, 16);
     float t = (float)GetTime();
     float power = 1.0f + 0.08f*sinf(t*13.0f) + 0.05f*sinf(t*7.3f + 1.7f);
+    if (currentLevel == 1) power *= 0.4f;                      // village lanterns: dimmer, like the Blender scene
     SetShaderValue(lit, locTorchPower, &power, SHADER_UNIFORM_FLOAT);
 }
 
@@ -680,6 +719,10 @@ static void DrawActors(void)
         Matrix local = MatrixMultiply(MatrixScale(1.0f, 1.0f + 0.015f*sinf(t*1.6f + ph), 1.0f),
                                       MatrixRotateZ(0.03f*sinf(t*0.9f + ph)));
         DrawActor(&robedModel, local, robed[i].pos, robed[i].rot);
+    }
+    for (int i = 0; i < reaperCount; i++) {                              // hooded figures: slight breathing
+        Matrix local = MatrixScale(1.0f, 1.0f + 0.01f*sinf(t*1.2f + i), 1.0f);
+        DrawActor(&reaperModel, local, reapers[i].pos, reapers[i].rot);
     }
     for (int i = 0; i < goblinCount; i++) {                              // wizard: slow side-to-side sway from the feet
         Matrix local = MatrixMultiply(MatrixScale(1.0f, 1.0f + 0.008f*sinf(t*1.3f + i), 1.0f),
@@ -712,10 +755,18 @@ static void DrawGame(void)
 
     // sky backdrop, scaled to cover the screen
     float sw = (float)GetScreenWidth(), sh = (float)GetScreenHeight();
+    if (currentLevel == 1) {
+        float k = fmaxf(2.0f, floorf(sh/sky.height/2.0f));          // whole-number scale keeps stars sharp
+        float tw = sky.width*k, th = sky.height*k;
+        for (int ty = 0; ty*th < sh; ty++) for (int tx = 0; tx*tw < sw; tx++)
+            DrawTexturePro(sky, (Rectangle){ 0, 0, (float)(tx % 2 ? -sky.width : sky.width), (float)(ty % 2 ? -sky.height : sky.height) },
+                           (Rectangle){ tx*tw, ty*th, tw, th }, (Vector2){ 0 }, 0, WHITE);
+    } else {
     float s = fmaxf(sw/sky.width, sh/sky.height);
     DrawTexturePro(sky, (Rectangle){ 0, 0, (float)sky.width, (float)sky.height },
                    (Rectangle){ (sw - sky.width*s)/2, (sh - sky.height*s)/2, sky.width*s, sky.height*s },
                    (Vector2){ 0 }, 0, (Color){ 178, 178, 178, 255 });   // sky 30% darker too
+    }
 
     BeginMode3D(camera);
         rlDisableBackfaceCulling();
@@ -790,6 +841,8 @@ static void DrawGame(void)
             DrawTextEx(GetFontDefault(), ok, (Vector2){ tx, ty }, (float)ofs, (float)ofs/10, (Color){ 210, 225, 255, 255 });
         }
     }
+
+    if (fade > 0.0f) DrawRectangle(0, 0, (int)sw, (int)sh, (Color){ 0, 0, 0, (unsigned char)(fade*255) });
 
     // HUD (hidden during the conversation)
     if (!talking) {
