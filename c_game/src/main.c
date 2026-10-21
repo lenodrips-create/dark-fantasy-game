@@ -342,6 +342,8 @@ static void SetupModelMaterials(Model *model, const char *namesPath, bool *walka
         else if (!strcmp(n, "DemonBack"))   { t = Tex("demon_back.png", false); }
         else if (!strcmp(n, "GoblinFront")) { t = Tex("goblin_front.png", false); }
         else if (!strcmp(n, "GoblinBack"))  { t = Tex("goblin_back.png", false); }
+        else if (!strcmp(n, "GoblinPants")) { t = Tex("goblin_pants.png", false); }
+        else if (!strcmp(n, "GoblinSkin"))  { t = Tex("goblin_skin.png", false); }
         else if (!strcmp(n, "HutWall"))     { t = Tex("hut_stone.png", false); }
         else if (!strcmp(n, "HutTeal"))     { t = Tex("hut_teal.png", false); }
         else if (!strcmp(n, "HutBand"))     { t = Tex("hut_band.png", false); }
@@ -737,7 +739,8 @@ static void DrawGame(void)
         for (int i = 0; i < smokeCount; i++)
             for (int k = 0; k < 2; k++) {
                 float ph = k*2.3f + i;
-                Matrix local = MatrixMultiply(MatrixScale(1.0f + 0.12f*sinf(tt*0.7f + ph), 1.0f + 0.08f*sinf(tt*0.5f + ph), 1.0f),
+                float ss = smokes[i].rot;                       // size: 1 = campfire column, small = cigar wisp
+                Matrix local = MatrixMultiply(MatrixScale(ss*(1.0f + 0.12f*sinf(tt*0.7f + ph)), ss*(1.0f + 0.08f*sinf(tt*0.5f + ph)), ss),
                                               MatrixRotateY(tt*(k ? -0.15f : 0.2f) + ph));
                 DrawActor(&smokeModel, local, smokes[i].pos, 0);
             }
