@@ -17,7 +17,6 @@ Img_tent_rim
 Img_tent_teal
 Img_tent_roof
 Img_ruin_pillar
-Img_ruin_floor
 Img_ruin_wall
 PineTrunk
 PineLeaves
