@@ -19,5 +19,6 @@ Img_tent_roof
 Img_ruin_pillar
 Img_ruin_wall
 RuinPillarFloor
+RuinStairs
 PineTrunk
 PineLeaves
