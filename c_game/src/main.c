@@ -106,6 +106,7 @@ static Vector3 torches[MAX_TORCHES]; static int torchCount = 0;
 typedef struct { Vector3 pos; float rot; } Actor;
 static Actor robed[MAX_ACTORS]; static int robedCount = 0;
 static Actor demons[8];         static int demonCount = 0;
+static Actor goblins[8];        static int goblinCount = 0;
 static Actor fires[MAX_ACTORS]; static int fireCount = 0;     // rot holds the fire's size
 static Actor smokes[16];        static int smokeCount = 0;
 static int   fireType[MAX_ACTORS];                             // 0 campfire flames, 1 demon-pit flames
@@ -155,6 +156,9 @@ static void LoadLevelData(const char *path)
         } else if (kind == 'L') {                       // torch flame (light source)
             fscanf(f, "%f %f %f", &a, &b, &c);
             if (torchCount < MAX_TORCHES) torches[torchCount++] = (Vector3){ a, b, c };
+        } else if (kind == 'G') {                       // goblin at the ruin
+            fscanf(f, "%f %f %f %f", &a, &b, &c, &d);
+            if (goblinCount < 8) goblins[goblinCount++] = (Actor){ { a, b, c }, d };
         } else if (kind == 'M') {                       // smoke column
             fscanf(f, "%f %f %f %f", &a, &b, &c, &d);
             if (smokeCount < 16) smokes[smokeCount++] = (Actor){ { a, b, c }, d };
@@ -254,7 +258,7 @@ static bool GroundHeight(float x, float z, float *out)
 // ---------------------------------------------------------------------------
 // Game state
 // ---------------------------------------------------------------------------
-static Model    level, robedModel, demonModel, fireModels[2], smokeModel;
+static Model    level, robedModel, demonModel, goblinModel, fireModels[2], smokeModel;
 
 // The knight is split into body + limbs; limbs swing around their hip/shoulder pivots.
 enum { PART_BODY, PART_LEG_L, PART_LEG_R, PART_ARM_L, PART_ARM_R, PART_COUNT };
@@ -336,13 +340,15 @@ static void SetupModelMaterials(Model *model, const char *namesPath, bool *walka
         else if (!strcmp(n, "RobedBack"))   { t = Tex("robed_back.png", false); }
         else if (!strcmp(n, "DemonFront"))  { t = Tex("demon_front.png", false); }
         else if (!strcmp(n, "DemonBack"))   { t = Tex("demon_back.png", false); }
+        else if (!strcmp(n, "GoblinFront")) { t = Tex("goblin_front.png", false); }
+        else if (!strcmp(n, "GoblinBack"))  { t = Tex("goblin_back.png", false); }
         else if (!strcmp(n, "HutWall"))     { t = Tex("hut_stone.png", false); }
         else if (!strcmp(n, "HutTeal"))     { t = Tex("hut_teal.png", false); }
         else if (!strcmp(n, "HutBand"))     { t = Tex("hut_band.png", false); }
         else if (!strcmp(n, "HutFloor"))    { t = Tex("hut_stone.png", false); tint = (Color){ 150, 150, 160, 255 }; walk = true; }
         else if (!strcmp(n, "Wood"))        { t = Tex("chest_wood.png", true); }
         else if (!strcmp(n, "Fire"))        { t = Tex("fire.png", true); }
-        else if (!strncmp(n, "Img_", 4))    { t = Tex(TextFormat("%s.png", n + 4), false); walk = !strcmp(n, "Img_hut_floor"); }
+        else if (!strncmp(n, "Img_", 4))    { t = Tex(TextFormat("%s.png", n + 4), false); walk = !strcmp(n, "Img_hut_floor") || !strcmp(n, "Img_ruin_floor"); }
         if (walkable) walkable[mi] = walk;
         if (t.id) m->maps[MATERIAL_MAP_DIFFUSE].texture = t;
         m->maps[MATERIAL_MAP_DIFFUSE].color = tint;
@@ -373,6 +379,7 @@ static void InitGame(void)
     bool walkable[64] = { 0 };
     SetupModelMaterials(&level, "assets/materials.txt", walkable);
     robedModel = LoadModel("assets/robed.glb"); SetupModelMaterials(&robedModel, "assets/robed.mats", NULL);
+    goblinModel = LoadModel("assets/goblin.glb"); SetupModelMaterials(&goblinModel, "assets/goblin.mats", NULL);
     demonModel = LoadModel("assets/demon.glb"); SetupModelMaterials(&demonModel, "assets/demon.mats", NULL);
     fireModels[0] = LoadModel("assets/fire_camp.glb"); SetupModelMaterials(&fireModels[0], "assets/fire_camp.mats", NULL);
     fireModels[1] = LoadModel("assets/fire_pit.glb");  SetupModelMaterials(&fireModels[1], "assets/fire_pit.mats",  NULL);
@@ -671,6 +678,10 @@ static void DrawActors(void)
         Matrix local = MatrixMultiply(MatrixScale(1.0f, 1.0f + 0.015f*sinf(t*1.6f + ph), 1.0f),
                                       MatrixRotateZ(0.03f*sinf(t*0.9f + ph)));
         DrawActor(&robedModel, local, robed[i].pos, robed[i].rot);
+    }
+    for (int i = 0; i < goblinCount; i++) {                              // slow breathing, slight lean
+        Matrix local = MatrixMultiply(MatrixScale(1.0f, 1.0f + 0.01f*sinf(t*1.3f + i), 1.0f), MatrixRotateZ(0.015f*sinf(t*0.6f + i)));
+        DrawActor(&goblinModel, local, goblins[i].pos, goblins[i].rot);
     }
     for (int i = 0; i < demonCount; i++) {
         if (demonRise <= 0.0f) continue;                                 // not shown until its scene starts
