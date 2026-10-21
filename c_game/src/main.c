@@ -108,6 +108,15 @@ static Actor robed[MAX_ACTORS]; static int robedCount = 0;
 static Actor demons[8];         static int demonCount = 0;
 static Actor fires[MAX_ACTORS]; static int fireCount = 0;     // rot holds the fire's size
 static Actor smokes[16];        static int smokeCount = 0;
+static int   fireType[MAX_ACTORS];                             // 0 campfire flames, 1 demon-pit flames
+
+// ---------- the robed figure's greeting ----------
+static int   talkerIdx = -1;
+static bool  talking = false, talkDone = false;
+static float talkTime = 0, typed = 0;
+static Vector3 talkStand, talkCamPos, talkCamTarget;
+static float talkFacing = 0;
+static const char *TALK_TEXT = "Greetings, hereby traveler. Take this, for it shall be given to the one down under.";
 #define MAX_BLOCKERS 512
 static Blocker  blockers[MAX_BLOCKERS]; static int blockerCount = 0;
 
@@ -139,11 +148,13 @@ static void LoadLevelData(const char *path)
             fscanf(f, "%f %f %f %f", &a, &b, &c, &d);
             if (smokeCount < 16) smokes[smokeCount++] = (Actor){ { a, b, c }, d };
         } else if (kind == 'P' || kind == 'D' || kind == 'X') {   // robed figure / demon / fire
+            int extra = 0;
             fscanf(f, "%f %f %f %f", &a, &b, &c, &d);
+            if (kind != 'D') fscanf(f, "%d", &extra);       // P: talks to the player, X: fire type
             Actor ac = { { a, b, c }, d };
-            if (kind == 'P' && robedCount < MAX_ACTORS) robed[robedCount++] = ac;
+            if (kind == 'P' && robedCount < MAX_ACTORS) { if (extra) talkerIdx = robedCount; robed[robedCount++] = ac; }
             if (kind == 'D' && demonCount < 8) demons[demonCount++] = ac;
-            if (kind == 'X' && fireCount < MAX_ACTORS) fires[fireCount++] = ac;
+            if (kind == 'X' && fireCount < MAX_ACTORS) { fireType[fireCount] = extra; fires[fireCount++] = ac; }
         } else if (kind == 'S') {                       // player spawn
             fscanf(f, "%f %f %f", &a, &b, &c);
             spawn = (Vector3){ a, b, c };
@@ -232,7 +243,7 @@ static bool GroundHeight(float x, float z, float *out)
 // ---------------------------------------------------------------------------
 // Game state
 // ---------------------------------------------------------------------------
-static Model    level, robedModel, demonModel, fireModel, smokeModel;
+static Model    level, robedModel, demonModel, fireModels[2], smokeModel;
 
 // The knight is split into body + limbs; limbs swing around their hip/shoulder pivots.
 enum { PART_BODY, PART_LEG_L, PART_LEG_R, PART_ARM_L, PART_ARM_R, PART_COUNT };
@@ -352,7 +363,8 @@ static void InitGame(void)
     SetupModelMaterials(&level, "assets/materials.txt", walkable);
     robedModel = LoadModel("assets/robed.glb"); SetupModelMaterials(&robedModel, "assets/robed.mats", NULL);
     demonModel = LoadModel("assets/demon.glb"); SetupModelMaterials(&demonModel, "assets/demon.mats", NULL);
-    fireModel  = LoadModel("assets/fire.glb");  SetupModelMaterials(&fireModel,  "assets/fire.mats",  NULL);
+    fireModels[0] = LoadModel("assets/fire_camp.glb"); SetupModelMaterials(&fireModels[0], "assets/fire_camp.mats", NULL);
+    fireModels[1] = LoadModel("assets/fire_pit.glb");  SetupModelMaterials(&fireModels[1], "assets/fire_pit.mats",  NULL);
     smokeModel = LoadModel("assets/smoke.glb"); SetupModelMaterials(&smokeModel, "assets/smoke.mats", NULL);
     BuildHeightField(&level, walkable);
 
@@ -463,7 +475,7 @@ static void UpdateGame(float dt)
     if (!paused && IsKeyPressed(KEY_ESCAPE)) { paused = true; EnableCursor(); }
     if (wasLocked && !locked) paused = true;     // browser released the mouse (Esc)
     wasLocked = locked;
-    if (!paused) {
+    if (!paused && !talking) {
         Vector2 md = GetMouseDelta();
         if (locked || IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             yaw -= md.x*0.0025f;
@@ -474,7 +486,37 @@ static void UpdateGame(float dt)
 
     // --- movement ---
     bool moving = false, run = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
-    if (!paused) {
+
+    // walk up to the robed group -> the front one on the right speaks
+    if (!talking && !talkDone && talkerIdx >= 0 && !paused) {
+        Vector3 np = robed[talkerIdx].pos;
+        if (Vector2Distance((Vector2){ playerPos.x, playerPos.z }, (Vector2){ np.x, np.z }) < 15.0f) {
+            float r = robed[talkerIdx].rot;
+            Vector3 front = { sinf(r), 0, cosf(r) };                     // the figure's facing direction
+            talkStand = Vector3Add(np, Vector3Scale(front, 4.6f));
+            GroundHeight(talkStand.x, talkStand.z, &talkStand.y);
+            talkFacing = atan2f(-front.x, -front.z);
+            talking = true; talkTime = 0; typed = 0;
+            talkCamPos = camera.position; talkCamTarget = camera.target;
+        }
+    }
+    if (talking) {
+        talkTime += dt;
+        Vector3 to = Vector3Subtract(talkStand, playerPos); to.y = 0;
+        float dist = Vector3Length(to);
+        if (dist > 0.15f) {                                              // walk into place
+            Vector3 step = Vector3Scale(to, fminf(1.0f, 8.0f*dt/dist));
+            playerPos.x += step.x; playerPos.z += step.z;
+            facing = atan2f(to.x, to.z); moving = true;
+        } else facing = talkFacing;
+        if (talkTime > 0.9f) typed += dt*32.0f;                          // typewriter: 32 letters a second
+        int len = (int)strlen(TALK_TEXT);
+        if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
+            if (typed < len) typed = (float)len;                         // first press finishes the line
+            else { talking = false; talkDone = true; }                   // second press is OK
+        }
+    }
+    if (!paused && !talking) {
         float fwd = (float)(IsKeyDown(KEY_W) - IsKeyDown(KEY_S));
         float str = (float)(IsKeyDown(KEY_D) - IsKeyDown(KEY_A));
         if (fwd != 0 || str != 0) {
@@ -522,6 +564,17 @@ static void UpdateGame(float dt)
     camera.position = Vector3Lerp(target, want, shownT);
     camera.target = target;
     if (pitch < -0.30f) camera.target.y += (-0.30f - pitch)*40.0f;   // look up at the towers
+    if (talking) {
+        Vector3 np = robed[talkerIdx].pos;
+        Vector3 dirN = Vector3Subtract(np, talkStand); dirN.y = 0; dirN = Vector3Normalize(dirN);
+        Vector3 right = { -dirN.z, 0, dirN.x };
+        Vector3 shotPos = Vector3Add(Vector3Add(talkStand, Vector3Scale(dirN, -3.6f)), Vector3Add(Vector3Scale(right, 2.3f), (Vector3){ 0, 3.6f, 0 }));
+        Vector3 shotTarget = Vector3Add(Vector3Add(np, Vector3Scale(right, 1.4f)), (Vector3){ 0, 3.0f, 0 });
+        float k = fminf(1.0f, dt*3.0f);
+        talkCamPos = Vector3Lerp(talkCamPos, shotPos, k);
+        talkCamTarget = Vector3Lerp(talkCamTarget, shotTarget, k);
+        camera.position = talkCamPos; camera.target = talkCamTarget;
+    }
 
     // turn the knight smoothly toward the walking direction
     static float shownFacing = 0;
@@ -601,10 +654,10 @@ static void DrawActors(void)
     }
     for (int i = 0; i < fireCount; i++) {
         float sz = fires[i].rot;
-        float flick = 1.0f + 0.18f*sinf(t*9.0f + i*2.1f) + 0.08f*sinf(t*15.7f + i);
-        Matrix local = MatrixMultiply(MatrixScale(sz*(1.0f + 0.05f*sinf(t*11.0f + i)), sz*flick, sz),
-                                      MatrixRotateY(t*0.8f + i));
-        DrawActor(&fireModel, local, fires[i].pos, 0);
+        float flick = 1.0f + 0.12f*sinf(t*9.0f + i*2.1f) + 0.06f*sinf(t*15.7f + i);
+        float sway = (fireType[i] == 1) ? 0.15f*sinf(t*0.9f + i) : t*0.8f + i;   // pit sheet faces out, campfire turns
+        Matrix local = MatrixMultiply(MatrixScale(sz*(1.0f + 0.04f*sinf(t*11.0f + i)), sz*flick, sz), MatrixRotateY(sway));
+        DrawActor(&fireModels[fireType[i] ? 1 : 0], local, fires[i].pos, fireType[i] == 1 && demonCount ? demons[0].rot : 0);
     }
 }
 
@@ -655,9 +708,50 @@ static void DrawGame(void)
         rlEnableBackfaceCulling();
     EndMode3D();
 
-    // HUD
-    DrawRectangle(10, (int)sh - 34, 330, 24, (Color){ 14, 10, 28, 180 });
-    DrawText("WASD move  Shift run  Space jump  Esc pause", 18, (int)sh - 28, 12, (Color){ 200, 194, 225, 255 });
+    // dialogue box with typewriter text
+    if (talking && talkTime > 0.9f) {
+        float bw = sw*0.88f, bx = (sw - bw)/2;
+        int fs = (int)fmaxf(18.0f, fminf(sh*0.048f, sw*0.05f)), spacing = fs/10;
+        // wrap the whole line first so words never jump while they are being typed
+        char lines[6][128] = { 0 }; int nl = 0, start = 0, len = (int)strlen(TALK_TEXT), lineStart[6] = { 0 };
+        while (start < len && nl < 6) {
+            int end = start, lastSpace = -1;
+            while (end < len) {
+                char tmp[128] = { 0 }; int n = end - start + 1; if (n > 127) break;
+                memcpy(tmp, TALK_TEXT + start, n);
+                if (MeasureTextEx(GetFontDefault(), tmp, (float)fs, (float)spacing).x > bw - fs*2.2f) break;
+                if (TALK_TEXT[end] == ' ') lastSpace = end;
+                end++;
+            }
+            if (end < len && lastSpace > start) end = lastSpace + 1;
+            lineStart[nl] = start; memcpy(lines[nl], TALK_TEXT + start, end - start); nl++; start = end;
+        }
+        float bh = nl*fs*1.35f + fs*1.9f, by = sh - bh - sh*0.05f;          // box grows to fit the wrapped text
+        DrawRectangleRounded((Rectangle){ bx, by, bw, bh }, 0.18f, 8, (Color){ 20, 20, 24, 175 });
+        int shown = (int)typed;
+        for (int i = 0; i < nl; i++) {
+            int visible = shown - lineStart[i]; if (visible <= 0) break;
+            char part[128] = { 0 }; int n = (int)strlen(lines[i]); memcpy(part, lines[i], visible < n ? visible : n);
+            Vector2 p = { bx + fs*1.1f, by + fs*0.9f + i*fs*1.35f };
+            for (int ox = -2; ox <= 2; ox += 2) for (int oy = -2; oy <= 2; oy += 2)          // dark outline
+                DrawTextEx(GetFontDefault(), part, (Vector2){ p.x + ox, p.y + oy }, (float)fs, (float)spacing, (Color){ 0, 0, 0, 200 });
+            DrawTextEx(GetFontDefault(), part, p, (float)fs, (float)spacing, RAYWHITE);
+        }
+        if (shown >= len && fmodf((float)GetTime(), 1.0f) < 0.65f) {
+            const char *ok = "ENTER  OK";
+            int ofs = (int)(fs*0.6f);
+            Vector2 sz = MeasureTextEx(GetFontDefault(), ok, (float)ofs, (float)ofs/10);
+            float tx = bx + bw - sz.x - fs*1.2f, ty = by + bh - sz.y - fs*0.5f;
+            DrawTriangle((Vector2){ tx - ofs*1.4f, ty }, (Vector2){ tx - ofs*0.9f, ty + ofs*0.8f }, (Vector2){ tx - ofs*0.4f, ty }, (Color){ 60, 140, 255, 255 });
+            DrawTextEx(GetFontDefault(), ok, (Vector2){ tx, ty }, (float)ofs, (float)ofs/10, (Color){ 210, 225, 255, 255 });
+        }
+    }
+
+    // HUD (hidden during the conversation)
+    if (!talking) {
+        DrawRectangle(10, (int)sh - 34, 330, 24, (Color){ 14, 10, 28, 180 });
+        DrawText("WASD move  Shift run  Space jump  Esc pause", 18, (int)sh - 28, 12, (Color){ 200, 194, 225, 255 });
+    }
     if (paused) {
         int w = 360, h = 150, x = ((int)sw - w)/2, y = ((int)sh - h)/2;
         DrawRectangle(0, 0, (int)sw, (int)sh, (Color){ 8, 5, 20, 120 });
