@@ -340,10 +340,8 @@ static void SetupModelMaterials(Model *model, const char *namesPath, bool *walka
         else if (!strcmp(n, "RobedBack"))   { t = Tex("robed_back.png", false); }
         else if (!strcmp(n, "DemonFront"))  { t = Tex("demon_front.png", false); }
         else if (!strcmp(n, "DemonBack"))   { t = Tex("demon_back.png", false); }
-        else if (!strcmp(n, "GoblinFront")) { t = Tex("goblin_front.png", false); }
-        else if (!strcmp(n, "GoblinBack"))  { t = Tex("goblin_back.png", false); }
-        else if (!strcmp(n, "GoblinPants")) { t = Tex("goblin_pants.png", false); }
-        else if (!strcmp(n, "GoblinSkin"))  { t = Tex("goblin_skin.png", false); }
+        else if (!strcmp(n, "WizardFront")) { t = Tex("wizard_front.png", false); }
+        else if (!strcmp(n, "WizardBack"))  { t = Tex("wizard_back.png", false); }
         else if (!strcmp(n, "HutWall"))     { t = Tex("hut_stone.png", false); }
         else if (!strcmp(n, "HutTeal"))     { t = Tex("hut_teal.png", false); }
         else if (!strcmp(n, "HutBand"))     { t = Tex("hut_band.png", false); }
@@ -381,7 +379,7 @@ static void InitGame(void)
     bool walkable[64] = { 0 };
     SetupModelMaterials(&level, "assets/materials.txt", walkable);
     robedModel = LoadModel("assets/robed.glb"); SetupModelMaterials(&robedModel, "assets/robed.mats", NULL);
-    goblinModel = LoadModel("assets/goblin.glb"); SetupModelMaterials(&goblinModel, "assets/goblin.mats", NULL);
+    goblinModel = LoadModel("assets/wizard.glb"); SetupModelMaterials(&goblinModel, "assets/wizard.mats", NULL);   // the wizard at the ruin
     demonModel = LoadModel("assets/demon.glb"); SetupModelMaterials(&demonModel, "assets/demon.mats", NULL);
     fireModels[0] = LoadModel("assets/fire_camp.glb"); SetupModelMaterials(&fireModels[0], "assets/fire_camp.mats", NULL);
     fireModels[1] = LoadModel("assets/fire_pit.glb");  SetupModelMaterials(&fireModels[1], "assets/fire_pit.mats",  NULL);
@@ -681,8 +679,9 @@ static void DrawActors(void)
                                       MatrixRotateZ(0.03f*sinf(t*0.9f + ph)));
         DrawActor(&robedModel, local, robed[i].pos, robed[i].rot);
     }
-    for (int i = 0; i < goblinCount; i++) {                              // slow breathing, slight lean
-        Matrix local = MatrixMultiply(MatrixScale(1.0f, 1.0f + 0.01f*sinf(t*1.3f + i), 1.0f), MatrixRotateZ(0.015f*sinf(t*0.6f + i)));
+    for (int i = 0; i < goblinCount; i++) {                              // wizard: slow side-to-side sway from the feet
+        Matrix local = MatrixMultiply(MatrixScale(1.0f, 1.0f + 0.008f*sinf(t*1.3f + i), 1.0f),
+                                      MatrixMultiply(MatrixRotateZ(0.035f*sinf(t*0.9f + i)), MatrixRotateX(0.012f*sinf(t*0.7f + i))));
         DrawActor(&goblinModel, local, goblins[i].pos, goblins[i].rot);
     }
     for (int i = 0; i < demonCount; i++) {
