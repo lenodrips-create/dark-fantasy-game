@@ -5,7 +5,6 @@ CaveBlack
 Wood
 Log
 PitStone
-Lava
 Img_hut_base
 Img_hut_arch
 Img_hut_rim
