@@ -18,6 +18,6 @@ Img_tent_teal
 Img_tent_roof
 Img_ruin_pillar
 Img_ruin_wall
-RuinStone
+RuinPillarFloor
 PineTrunk
 PineLeaves
