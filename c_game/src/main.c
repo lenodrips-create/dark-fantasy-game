@@ -322,6 +322,7 @@ static void SetupModelMaterials(Model *model, const char *namesPath, bool *walka
         if      (!strcmp(n, "GrassShaded")) { t = Tex("grass.png", false); tint = (Color){ 120, 120, 120, 255 }; walk = true; }
         else if (!strcmp(n, "Grass"))       { t = Tex("grass.png", false); tint = (Color){ 110, 110, 110, 255 }; }
         else if (!strcmp(n, "WallTex"))     { t = Tex("wall.png", true); }
+        else if (!strcmp(n, "RuinStone"))   { t = Tex("wall.png", true); walk = true; }   // ruin floor + stairs: cliff stone
         else if (!strcmp(n, "TownStone"))   { t = Tex("flagstone.png", true); walk = true; }
         else if (!strcmp(n, "CaveBlack"))   { tint = BLACK; }
         else if (!strcmp(n, "PineTrunk"))   { t = Tex("pine_trunk.png", true); }
@@ -348,7 +349,7 @@ static void SetupModelMaterials(Model *model, const char *namesPath, bool *walka
         else if (!strcmp(n, "HutFloor"))    { t = Tex("hut_stone.png", false); tint = (Color){ 150, 150, 160, 255 }; walk = true; }
         else if (!strcmp(n, "Wood"))        { t = Tex("chest_wood.png", true); }
         else if (!strcmp(n, "Fire"))        { t = Tex("fire.png", true); }
-        else if (!strncmp(n, "Img_", 4))    { t = Tex(TextFormat("%s.png", n + 4), false); walk = !strcmp(n, "Img_hut_floor") || !strcmp(n, "Img_ruin_wall"); }
+        else if (!strncmp(n, "Img_", 4))    { t = Tex(TextFormat("%s.png", n + 4), false); walk = !strcmp(n, "Img_hut_floor"); }
         if (walkable) walkable[mi] = walk;
         if (t.id) m->maps[MATERIAL_MAP_DIFFUSE].texture = t;
         m->maps[MATERIAL_MAP_DIFFUSE].color = tint;
