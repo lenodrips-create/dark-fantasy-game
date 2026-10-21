@@ -118,7 +118,16 @@ static bool  talking = false, talkDone = false;
 static float talkTime = 0, typed = 0;
 static Vector3 talkStand, talkCamPos, talkCamTarget;
 static float talkFacing = 0;
-static const char *TALK_TEXT = "Greetings, hereby traveler. Take this, for it shall be given to the one down under.";
+#define ITEM_NAME "{blank}"          // the gift from the robed figure: change this to name it
+static const char *TALK_LINES[2] = {
+    "Greetings, hereby traveler. Take this, for it shall be given to the one down under.",
+    "Do you dwell the precious " ITEM_NAME "? Why yes, you may pass.",
+};
+static const char *TALK_TEXT = "";
+static int   talkWho = 0;                       // 0 robed figure, 1 demon
+static bool  demonDone = false;
+static float demonRise = 0;                     // 0 hidden underground .. 1 fully risen
+static Vector3 talkSpeaker;
 #define MAX_BLOCKERS 512
 static Blocker  blockers[MAX_BLOCKERS]; static int blockerCount = 0;
 
@@ -494,12 +503,16 @@ static void UpdateGame(float dt)
     bool moving = false, run = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
 
     // walk up to the robed group -> the front one on the right speaks
-    if (!talking && !talkDone && talkerIdx >= 0 && !paused) {
-        Vector3 np = robed[talkerIdx].pos;
-        if (Vector2Distance((Vector2){ playerPos.x, playerPos.z }, (Vector2){ np.x, np.z }) < 15.0f) {
-            float r = robed[talkerIdx].rot;
-            Vector3 front = { sinf(r), 0, cosf(r) };                     // the figure's facing direction
-            talkStand = Vector3Add(np, Vector3Scale(front, 4.6f));
+    for (int who = 0; who < 2 && !talking && !paused; who++) {
+        if (who == 0 && (talkDone || talkerIdx < 0)) continue;
+        if (who == 1 && (demonDone || demonCount == 0)) continue;
+        Vector3 np = who ? demons[0].pos : robed[talkerIdx].pos;
+        float trigger = who ? 26.0f : 15.0f;
+        if (Vector2Distance((Vector2){ playerPos.x, playerPos.z }, (Vector2){ np.x, np.z }) < trigger) {
+            float r = who ? demons[0].rot : robed[talkerIdx].rot;
+            Vector3 front = { sinf(r), 0, cosf(r) };                     // the speaker's facing direction
+            talkWho = who; TALK_TEXT = TALK_LINES[who]; talkSpeaker = np;
+            talkStand = Vector3Add(np, Vector3Scale(front, who ? 10.0f : 4.6f));
             GroundHeight(talkStand.x, talkStand.z, &talkStand.y);
             talkFacing = atan2f(-front.x, -front.z);
             talking = true; talkTime = 0; typed = 0;
@@ -509,17 +522,20 @@ static void UpdateGame(float dt)
     if (talking) {
         talkTime += dt;
         Vector3 to = Vector3Subtract(talkStand, playerPos); to.y = 0;
+        (void)0;
         float dist = Vector3Length(to);
         if (dist > 0.15f) {                                              // walk into place
             Vector3 step = Vector3Scale(to, fminf(1.0f, 8.0f*dt/dist));
             playerPos.x += step.x; playerPos.z += step.z;
             facing = atan2f(to.x, to.z); moving = true;
         } else facing = talkFacing;
-        if (talkTime > 0.9f) typed += dt*32.0f;                          // typewriter: 32 letters a second
+        float delay = talkWho ? 2.3f : 0.9f;                             // the demon climbs out first
+        if (talkWho) demonRise = fminf(1.0f, talkTime/1.8f);
+        if (talkTime > delay) typed += dt*32.0f;                         // typewriter: 32 letters a second
         int len = (int)strlen(TALK_TEXT);
-        if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
+        if (talkTime > delay && (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER))) {
             if (typed < len) typed = (float)len;                         // first press finishes the line
-            else { talking = false; talkDone = true; }                   // second press is OK
+            else { talking = false; if (talkWho) demonDone = true; else talkDone = true; }   // second press is OK
         }
     }
     if (!paused && !talking) {
@@ -544,6 +560,8 @@ static void UpdateGame(float dt)
         }
         if (onGround && IsKeyDown(KEY_SPACE)) { playerVy = 13.0f; onGround = false; }
     }
+
+    if (demonDone && demonRise > 0.0f) demonRise = fmaxf(0.0f, demonRise - dt/1.2f);   // sinks back and is gone
 
     // --- gravity ---
     float gy = playerPos.y;
@@ -571,11 +589,12 @@ static void UpdateGame(float dt)
     camera.target = target;
     if (pitch < -0.30f) camera.target.y += (-0.30f - pitch)*40.0f;   // look up at the towers
     if (talking) {
-        Vector3 np = robed[talkerIdx].pos;
+        Vector3 np = talkSpeaker;
         Vector3 dirN = Vector3Subtract(np, talkStand); dirN.y = 0; dirN = Vector3Normalize(dirN);
         Vector3 right = { -dirN.z, 0, dirN.x };
-        Vector3 shotPos = Vector3Add(Vector3Add(talkStand, Vector3Scale(dirN, -3.6f)), Vector3Add(Vector3Scale(right, 2.3f), (Vector3){ 0, 3.6f, 0 }));
-        Vector3 shotTarget = Vector3Add(Vector3Add(np, Vector3Scale(right, 1.4f)), (Vector3){ 0, 3.0f, 0 });
+        float back = talkWho ? 5.0f : 3.6f, lookY = talkWho ? 4.6f : 3.0f;   // the demon is much bigger
+        Vector3 shotPos = Vector3Add(Vector3Add(talkStand, Vector3Scale(dirN, -back)), Vector3Add(Vector3Scale(right, 2.3f), (Vector3){ 0, 3.6f, 0 }));
+        Vector3 shotTarget = Vector3Add(Vector3Add(np, Vector3Scale(right, 1.4f)), (Vector3){ 0, lookY, 0 });
         float k = fminf(1.0f, dt*3.0f);
         talkCamPos = Vector3Lerp(talkCamPos, shotPos, k);
         talkCamTarget = Vector3Lerp(talkCamTarget, shotTarget, k);
@@ -654,8 +673,10 @@ static void DrawActors(void)
         DrawActor(&robedModel, local, robed[i].pos, robed[i].rot);
     }
     for (int i = 0; i < demonCount; i++) {
-        float breathe = sinf(t*0.8f);     // small enough that the hands stay on the pit rim
-        Matrix local = MatrixMultiply(MatrixRotateX(-0.02f*breathe), MatrixTranslate(0, 0.06f*breathe, 0));
+        if (demonRise <= 0.0f) continue;                                 // not shown until its scene starts
+        float breathe = sinf(t*0.8f);
+        float ease = 1.0f - (1.0f - demonRise)*(1.0f - demonRise);
+        Matrix local = MatrixMultiply(MatrixRotateX(-0.02f*breathe), MatrixTranslate(0, 0.06f*breathe - 8.0f*(1.0f - ease), 0));
         DrawActor(&demonModel, local, demons[i].pos, demons[i].rot);
     }
     for (int i = 0; i < fireCount; i++) {
@@ -717,7 +738,7 @@ static void DrawGame(void)
     EndMode3D();
 
     // dialogue box with typewriter text
-    if (talking && talkTime > 0.9f) {
+    if (talking && talkTime > (talkWho ? 2.3f : 0.9f)) {
         float bw = sw*0.88f, bx = (sw - bw)/2;
         int fs = (int)fmaxf(18.0f, fminf(sh*0.048f, sw*0.05f)), spacing = fs/10;
         // wrap the whole line first so words never jump while they are being typed
